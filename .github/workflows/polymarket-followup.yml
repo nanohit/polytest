@@ -1,0 +1,75 @@
+name: Polymarket focused follow-up
+
+on:
+  push:
+    paths:
+      - '.github/workflows/polymarket-followup.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: polymarket-followup
+  cancel-in-progress: true
+
+jobs:
+  realized-d1-a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      START_INDEX: '15'
+      END_INDEX: '28'
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 realized_d1_chunk.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realized-d1-15-28
+          path: realized_d1_15_28.json
+
+  realized-d1-b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      START_INDEX: '29'
+      END_INDEX: '43'
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 realized_d1_chunk.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realized-d1-29-43
+          path: realized_d1_29_43.json
+
+  true-maker-share:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 stratified_maker_share_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: true-maker-share
+          path: |
+            stratified_maker_share_probe.json
+            stratified_maker_share_probe.csv
+
+  competition-multiday:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      max-parallel: 2
+      matrix:
+        date_ago: [2, 3, 4, 5]
+    env:
+      DATE_AGO: ${{ matrix.date_ago }}
+      TARGET_N: '6'
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 competition_one_day.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: competition-date-${{ matrix.date_ago }}
+          path: competition_*.json
