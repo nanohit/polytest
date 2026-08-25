@@ -7,13 +7,13 @@ on:
 jobs:
   maker-screen:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Public API smoke test
         run: python3 polymarket_smoke.py
-      - name: Run 60-day 50-maker cohort screen
-        run: python3 maker_screen.py
+      - name: Run targeted 60-day 50-maker cohort screen
+        run: python3 maker_screen_fast.py
       - name: Upload research results
         if: always()
         uses: actions/upload-artifact@v4
@@ -24,6 +24,4 @@ jobs:
             maker_screen_summary.json
             maker_wallets.csv
             rebate_rows.csv
-            rebate_activity.csv
             maker_screen_errors.json
-            maker_screen_details.json
