@@ -11,13 +11,15 @@ concurrency:
 jobs:
   maker-screen:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Public API smoke test
         run: python3 polymarket_smoke.py
       - name: Probe public accounting snapshots
         run: python3 accounting_snapshot_probe.py
+      - name: Run stratified true maker-share probe
+        run: python3 stratified_maker_share_probe.py
       - name: Upload research results
         if: always()
         uses: actions/upload-artifact@v4
@@ -26,3 +28,5 @@ jobs:
           path: |
             smoke_results.json
             accounting_snapshot_probe.json
+            stratified_maker_share_probe.json
+            stratified_maker_share_probe.csv
