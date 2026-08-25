@@ -16,8 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Public API smoke test
         run: python3 polymarket_smoke.py
-      - name: Run targeted D1 closed-loop audit
-        run: python3 targeted_closed_loop.py
+      - name: Probe public accounting snapshots
+        run: python3 accounting_snapshot_probe.py
       - name: Upload research results
         if: always()
         uses: actions/upload-artifact@v4
@@ -25,4 +25,4 @@ jobs:
           name: polymarket-maker-screen
           path: |
             smoke_results.json
-            targeted_closed_loop.json
+            accounting_snapshot_probe.json
