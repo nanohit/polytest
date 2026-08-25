@@ -1,4 +1,4 @@
-name: Polymarket maker screen
+name: Polymarket deep maker audit
 
 on:
   workflow_dispatch:
@@ -9,16 +9,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  maker-screen:
+  maker-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Public API smoke test
         run: python3 polymarket_smoke.py
-      - name: Upload smoke result
+      - name: Deep empirical audit
+        run: python3 deep_empirical_audit.py
+      - name: Realized-only D1 audit
+        run: python3 realized_d1_audit.py
+      - name: Upload research results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: polymarket-smoke
-          path: smoke_results.json
+          name: polymarket-deep-audit
+          path: |
+            smoke_results.json
+            deep_empirical_audit.json
+            mixed_wallet_days.csv
+            realized_d1_audit.json
