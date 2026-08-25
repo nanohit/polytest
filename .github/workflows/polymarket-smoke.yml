@@ -11,13 +11,13 @@ concurrency:
 jobs:
   maker-screen:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Public API smoke test
         run: python3 polymarket_smoke.py
-      - name: Run cheap CRYPTO leaderboard maker screen
-        run: python3 maker_leaderboard_screen.py
+      - name: Run category-consistent maker intensity probe
+        run: python3 maker_intensity_probe.py
       - name: Upload research results
         if: always()
         uses: actions/upload-artifact@v4
@@ -25,6 +25,6 @@ jobs:
           name: polymarket-maker-screen
           path: |
             smoke_results.json
-            leaderboard_maker_summary.json
-            leaderboard_maker_wallets.csv
-            leaderboard_maker_errors.json
+            maker_intensity_summary.json
+            maker_intensity_overall.csv
+            maker_intensity_errors.json
