@@ -6,8 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-UA='nanohit-polytest-leaderboard-screen/0.1'
-TARGET=50
+UA='nanohit-polytest-leaderboard-screen/0.2'
 LOOKBACK_DAYS=31
 MAX_LEADERBOARD=500
 WORKERS=8
@@ -72,8 +71,8 @@ def get(base,params=None,retries=4,timeout=25):
             last={'status':None,'url':url,'error':repr(e)}; time.sleep(min(8,2**a))
     return last
 
-def q(v,p):
-    a=sorted(x for x in v if x is not None and math.isfinite(x))
+def q(vals,p):
+    a=sorted(x for x in vals if x is not None and math.isfinite(x))
     if not a:return None
     if len(a)==1:return a[0]
     z=(len(a)-1)*p; lo=int(math.floor(z)); hi=int(math.ceil(z))
@@ -88,32 +87,45 @@ def write_csv(path,rows):
     with open(path,'w',newline='',encoding='utf-8') as f:
         w=csv.DictWriter(f,fieldnames=keys); w.writeheader(); w.writerows(rows)
 
+def stats(rows):
+    pnl=[r['leaderboard_pnl_month'] for r in rows]
+    upper=[r['pnl_plus_rebate_upper_bound'] for r in rows]
+    norm=[r['pnl_over_volume'] for r in rows if r['pnl_over_volume'] is not None]
+    norm_upper=[r['pnl_plus_rebate_over_volume_upper_bound'] for r in rows if r['pnl_plus_rebate_over_volume_upper_bound'] is not None]
+    return {
+        'n':len(rows),
+        'pnl_usdc':{'p10':q(pnl,.1),'p25':q(pnl,.25),'median':q(pnl,.5),'p75':q(pnl,.75),'p90':q(pnl,.9),'sum':sum(pnl)},
+        'pnl_over_volume':{'p10':q(norm,.1),'p25':q(norm,.25),'median':q(norm,.5),'p75':q(norm,.75),'p90':q(norm,.9)},
+        'negative_pnl_fraction':sum(1 for x in pnl if x<0)/len(pnl) if pnl else None,
+        'rebate_usdc_sum':sum(r['maker_rebate_activity_usdc_31d'] for r in rows),
+        'pnl_plus_rebate_upper_bound_usdc':{'p10':q(upper,.1),'p25':q(upper,.25),'median':q(upper,.5),'p75':q(upper,.75),'p90':q(upper,.9),'sum':sum(upper)},
+        'pnl_plus_rebate_over_volume_upper_bound':{'p10':q(norm_upper,.1),'p25':q(norm_upper,.25),'median':q(norm_upper,.5),'p75':q(norm_upper,.75),'p90':q(norm_upper,.9)},
+        'negative_upper_bound_fraction':sum(1 for x in upper if x<0)/len(upper) if upper else None,
+        'median_rebate_days':q([r['rebate_days_31d'] for r in rows],.5),
+        'median_rebate_over_volume':q([r['rebate_over_volume'] for r in rows if r['rebate_over_volume'] is not None],.5),
+    }
+
 def main():
-    now=datetime.now(timezone.utc); end=int(now.timestamp()); start=int((now-timedelta(days=LOOKBACK_DAYS)).timestamp())
+    now=datetime.now(timezone.utc); today=now.date().isoformat(); end=int(now.timestamp()); start=int((now-timedelta(days=LOOKBACK_DAYS)).timestamp())
     errors=[]; leaderboard=[]
-    # Pull high-volume crypto traders in pages; max 500 wallets.
     for off in range(0,MAX_LEADERBOARD,50):
         r=get('https://data-api.polymarket.com/v1/leaderboard',{'category':'CRYPTO','timePeriod':'MONTH','orderBy':'VOL','limit':50,'offset':off})
         if r.get('status')!=200:
             errors.append({'stage':'leaderboard','offset':off,'response':r}); break
-        rows=items(r.get('data'))
-        leaderboard.extend(rows)
+        rows=items(r.get('data')); leaderboard.extend(rows)
         print(f'leaderboard offset={off} rows={len(rows)} total={len(leaderboard)}',flush=True)
         if len(rows)<50: break
 
-    # Deduplicate wallets and preserve leaderboard PnL/vol.
     by_wallet={}
     for x in leaderboard:
         w=first(x,'proxyWallet','proxy_wallet')
-        if isinstance(w,str) and w.startswith('0x') and w not in by_wallet:
-            by_wallet[w]=x
+        if isinstance(w,str) and w.startswith('0x') and w not in by_wallet: by_wallet[w]=x
 
+    activity_cache={}
     def activity(w):
-        r=get('https://data-api.polymarket.com/activity',{'user':w,'type':'MAKER_REBATE','limit':500,'offset':0,'start':start,'end':end})
-        return w,r
+        return w,get('https://data-api.polymarket.com/activity',{'user':w,'type':'MAKER_REBATE','limit':500,'offset':0,'start':start,'end':end})
 
-    maker_rows=[]
-    wallets=list(by_wallet)
+    maker_rows=[]; wallets=list(by_wallet)
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futs=[ex.submit(activity,w) for w in wallets]
         for i,f in enumerate(as_completed(futs),1):
@@ -124,63 +136,69 @@ def main():
             for e in items(r.get('data')):
                 t=ets(e)
                 if t is None or start<=t<=end: evs.append(e)
+            activity_cache[w]=evs
             if not evs: continue
             dates=sorted({edate(e) for e in evs if edate(e)})
             rebate=sum(fnum(first(e,'usdcSize','usdc_size','amount','size')) for e in evs)
-            lb=by_wallet[w]
-            pnl=fnum(first(lb,'pnl'))
-            vol=fnum(first(lb,'vol'))
+            lb=by_wallet[w]; pnl=fnum(first(lb,'pnl')); vol=fnum(first(lb,'vol'))
+            try: rank_num=int(first(lb,'rank'))
+            except Exception: rank_num=None
             maker_rows.append({
-                'wallet':w,'rank':first(lb,'rank'),'userName':first(lb,'userName','username'),
-                'leaderboard_pnl_month':pnl,'leaderboard_vol_month':vol,
-                'rebate_days_31d':len(dates),'maker_rebate_activity_usdc_31d':rebate,
-                'pnl_plus_rebate_screen':pnl+rebate,
+                'wallet':w,'rank':first(lb,'rank'),'rank_num':rank_num,'userName':first(lb,'userName','username'),
+                'leaderboard_pnl_month':pnl,'leaderboard_vol_month':vol,'rebate_days_31d':len(dates),
+                'maker_rebate_activity_usdc_31d':rebate,'rebate_over_volume':rebate/vol if vol>0 else None,
                 'pnl_over_volume':pnl/vol if vol>0 else None,
-                'pnl_plus_rebate_over_volume':(pnl+rebate)/vol if vol>0 else None,
+                'pnl_plus_rebate_upper_bound':pnl+rebate,
+                'pnl_plus_rebate_over_volume_upper_bound':(pnl+rebate)/vol if vol>0 else None,
             })
             if i%50==0: print(f'activity checked={i}/{len(wallets)} rebate_makers={len(maker_rows)}',flush=True)
 
-    maker_rows.sort(key=lambda r:(r['leaderboard_vol_month']),reverse=True)
-    selected=maker_rows[:TARGET]
-    # Spot-check a few active maker dates via /rebates/current, not for exhaustive attribution.
-    spot=[]
-    for row in selected[:5]:
-        w=row['wallet']
-        ar=get('https://data-api.polymarket.com/activity',{'user':w,'type':'MAKER_REBATE','limit':50,'offset':0,'start':start,'end':end})
-        dates=sorted({edate(e) for e in items(ar.get('data')) if edate(e)},reverse=True)
-        if not dates: continue
-        d=dates[0]
-        rr=get('https://clob.polymarket.com/rebates/current',{'date':d,'maker_address':w})
-        exact=sum(fnum(first(x,'rebated_fees_usdc','rebatedFeesUsdc','earnings')) for x in items(rr.get('data'))) if rr.get('status')==200 else None
-        spot.append({'wallet':w,'date':d,'rebates_current_status':rr.get('status'),'exact_condition_sum':exact,'rows':len(items(rr.get('data'))) if rr.get('status')==200 else None})
+    maker_rows.sort(key=lambda r:r['rank_num'] if r['rank_num'] is not None else 10**9)
+    buckets={
+        'rank_1_50':[r for r in maker_rows if r['rank_num'] is not None and 1<=r['rank_num']<=50],
+        'rank_51_100':[r for r in maker_rows if r['rank_num'] is not None and 51<=r['rank_num']<=100],
+        'rank_101_200':[r for r in maker_rows if r['rank_num'] is not None and 101<=r['rank_num']<=200],
+        'rank_201_500':[r for r in maker_rows if r['rank_num'] is not None and 201<=r['rank_num']<=500],
+    }
 
-    nets=[r['pnl_plus_rebate_screen'] for r in selected]; pnls=[r['leaderboard_pnl_month'] for r in selected]; norm=[r['pnl_plus_rebate_over_volume'] for r in selected]
+    # Validate /activity rebate sums against /rebates/current on the latest COMPLETED activity day.
+    spot=[]
+    for row in maker_rows[:10]:
+        w=row['wallet']; evs=activity_cache.get(w,[])
+        finalized=sorted({edate(e) for e in evs if edate(e) and edate(e)<today},reverse=True)
+        if not finalized: continue
+        d=finalized[0]
+        activity_day=sum(fnum(first(e,'usdcSize','usdc_size','amount','size')) for e in evs if edate(e)==d)
+        same=get('https://clob.polymarket.com/rebates/current',{'date':d,'maker_address':w})
+        prev=(datetime.fromisoformat(d).date()-timedelta(days=1)).isoformat()
+        prior=get('https://clob.polymarket.com/rebates/current',{'date':prev,'maker_address':w})
+        same_sum=sum(fnum(first(x,'rebated_fees_usdc','rebatedFeesUsdc','earnings')) for x in items(same.get('data'))) if same.get('status')==200 else None
+        prev_sum=sum(fnum(first(x,'rebated_fees_usdc','rebatedFeesUsdc','earnings')) for x in items(prior.get('data'))) if prior.get('status')==200 else None
+        spot.append({'wallet':w,'activity_date':d,'activity_day_usdc':activity_day,'same_date_status':same.get('status'),'same_date_exact_sum':same_sum,'same_date_rows':len(items(same.get('data'))) if same.get('status')==200 else None,'prior_date':prev,'prior_date_status':prior.get('status'),'prior_date_exact_sum':prev_sum,'prior_date_rows':len(items(prior.get('data'))) if prior.get('status')==200 else None})
+
     summary={
         'started_at':now.isoformat(),'finished_at':datetime.now(timezone.utc).isoformat(),
-        'leaderboard_wallets_checked':len(by_wallet),'rebate_active_found':len(maker_rows),'selected_makers':len(selected),
-        'errors':len(errors),'lookback_activity_days':LOOKBACK_DAYS,
-        'leaderboard_period':'MONTH','leaderboard_category':'CRYPTO','selection_order':'VOL',
-        'pnl_month_usdc':{'p10':q(pnls,.1),'p25':q(pnls,.25),'median':q(pnls,.5),'p75':q(pnls,.75),'p90':q(pnls,.9),'sum':sum(pnls)},
-        'pnl_plus_rebate_screen_usdc':{'p10':q(nets,.1),'p25':q(nets,.25),'median':q(nets,.5),'p75':q(nets,.75),'p90':q(nets,.9),'sum':sum(nets)},
-        'pnl_plus_rebate_over_volume':{'p10':q(norm,.1),'p25':q(norm,.25),'median':q(norm,.5),'p75':q(norm,.75),'p90':q(norm,.9)},
-        'total_rebate_activity_usdc':sum(r['maker_rebate_activity_usdc_31d'] for r in selected),
-        'median_rebate_days':q([r['rebate_days_31d'] for r in selected],.5),
-        'spot_checks':spot,
+        'leaderboard_wallets_checked':len(by_wallet),'rebate_active_found':len(maker_rows),'errors':len(errors),
+        'lookback_activity_days':LOOKBACK_DAYS,'leaderboard_period':'MONTH','leaderboard_category':'CRYPTO','leaderboard_order':'VOL',
+        'all_rebate_active_top500':stats(maker_rows),
+        'rank_buckets':{k:stats(v) for k,v in buckets.items()},
+        'spot_checks_finalized_dates':spot,
         'caveats':[
-            'Leaderboard pnl semantics are wallet/category/period level, not maker-fill attribution.',
-            'Maker rebate activity may or may not already be reflected in leaderboard pnl; report both pnl and pnl+rebate as a conservative diagnostic, not accounting truth.',
-            'Positive result cannot prove maker profitability; a deeply negative result even after adding rebate is a strong kill signal for generic rebate-maker economics.'
+            'Leaderboard pnl is wallet/category/period-level and is not maker-fill attribution.',
+            'Official docs do not specify whether leaderboard pnl includes maker rebates; pnl+rebate is therefore labeled an upper-bound diagnostic until reconciled.',
+            'The universe is top-500 CRYPTO wallets by monthly volume, not all makers; this measures economically active participants.',
+            'A positive result does not prove maker fills are profitable. A negative result would have been a much stronger kill signal.'
         ]
     }
-    med=summary['pnl_plus_rebate_screen_usdc']['median']; p75=summary['pnl_plus_rebate_screen_usdc']['p75']
-    if len(selected)>=30 and med is not None and p75 is not None and med<0 and p75<=0: verdict='STRONG_KILL_SIGNAL'
-    elif len(selected)>=30 and med is not None and med<0: verdict='NEGATIVE_SIGNAL'
-    elif len(selected)<30: verdict='INSUFFICIENT_REBATE_MAKERS_IN_TOP_VOLUME_COHORT'
-    else: verdict='NO_KILL__NEEDS_MAKER_FILL_ATTRIBUTION'
+    med=summary['all_rebate_active_top500']['pnl_usdc']['median']; p75=summary['all_rebate_active_top500']['pnl_usdc']['p75']
+    if len(maker_rows)>=100 and med is not None and p75 is not None and med<0 and p75<=0: verdict='STRONG_KILL_SIGNAL'
+    elif len(maker_rows)>=100 and med is not None and med<0: verdict='NEGATIVE_SIGNAL'
+    elif len(maker_rows)<100: verdict='INSUFFICIENT_REBATE_MAKER_COHORT'
+    else: verdict='NO_KILL__MAKER_FILL_ATTRIBUTION_REQUIRED'
     summary['verdict']=verdict
-    write_csv('leaderboard_maker_wallets.csv',selected)
+    write_csv('leaderboard_maker_wallets.csv',maker_rows)
     with open('leaderboard_maker_summary.json','w') as f: json.dump(summary,f,indent=2)
     with open('leaderboard_maker_errors.json','w') as f: json.dump(errors,f,indent=2,default=str)
-    print('=== LEADERBOARD MAKER SCREEN ==='); print(json.dumps(summary,indent=2)); print('FILES=leaderboard_maker_summary.json,leaderboard_maker_wallets.csv,leaderboard_maker_errors.json')
+    print('=== LEADERBOARD MAKER SCREEN V2 ==='); print(json.dumps(summary,indent=2)); print('FILES=leaderboard_maker_summary.json,leaderboard_maker_wallets.csv,leaderboard_maker_errors.json')
     return 0
 if __name__=='__main__': sys.exit(main())
