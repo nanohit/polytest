@@ -1,0 +1,80 @@
+name: Polymarket final public-data audit
+
+on:
+  push:
+    paths:
+      - '.github/workflows/polymarket-public-final.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: polymarket-public-final
+  cancel-in-progress: true
+
+jobs:
+  volume-units:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 volume_units_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: volume-units
+          path: volume_units_probe.json
+
+  d1-reconciled:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      max-parallel: 3
+      matrix:
+        include:
+          - start: 1
+            end: 14
+          - start: 15
+            end: 28
+          - start: 29
+            end: 43
+    env:
+      START_INDEX: ${{ matrix.start }}
+      END_INDEX: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 realized_d1_reconciled_chunk.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: d1-reconciled-${{ matrix.start }}-${{ matrix.end }}
+          path: realized_d1_reconciled_*.json
+
+  crypto-pool-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      max-parallel: 3
+      fail-fast: false
+      matrix:
+        day: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
+    env:
+      DAY: ${{ matrix.day }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 crypto_pool_day.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crypto-pool-day-${{ matrix.day }}
+          path: crypto_pool_*.json
+
+  tail-units:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tail_unit_economics.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tail-unit-economics
+          path: |
+            tail_unit_economics.csv
+            tail_unit_economics.json
