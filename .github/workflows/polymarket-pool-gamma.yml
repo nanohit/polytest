@@ -10,6 +10,7 @@ concurrency:
   group: polymarket-pool-gamma
   cancel-in-progress: true
 
+# v2: Gamma keyset pagination
 jobs:
   pool-day:
     runs-on: ubuntu-latest
