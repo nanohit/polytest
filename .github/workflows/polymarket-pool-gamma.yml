@@ -1,0 +1,31 @@
+name: Polymarket Gamma crypto-pool audit
+
+on:
+  push:
+    paths:
+      - '.github/workflows/polymarket-pool-gamma.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: polymarket-pool-gamma
+  cancel-in-progress: true
+
+jobs:
+  pool-day:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        day: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
+    env:
+      DAY: ${{ matrix.day }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 crypto_pool_gamma_day.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crypto-pool-gamma-${{ matrix.day }}
+          path: crypto_pool_gamma_*.json
