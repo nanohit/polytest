@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, math
+import json, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
@@ -18,35 +18,38 @@ def iso(dt):
 
 def gamma_markets(day0,day1):
     by={}
-    # Union of closed/open markets overlapping the day. Gamma supports these range filters.
+    # Keyset pagination is required for large market sets; offset pagination fails around offset~900.
     for closed in ('true','false'):
-        off=0
-        while off<=20000:
-            r=get('https://gamma-api.polymarket.com/markets',{
+        cursor=None; pages=0
+        while pages<500:
+            params={
                 'tag_id':TAG_ID,'related_tags':'true','closed':closed,
                 'start_date_max':iso(day1),'end_date_min':iso(day0),
-                'limit':100,'offset':off,'order':'id','ascending':'true'
-            })
+                'limit':100,'ascending':'true'
+            }
+            if cursor: params['after_cursor']=cursor
+            r=get('https://gamma-api.polymarket.com/markets/keyset',params)
             if r.get('status')!=200:
-                raise RuntimeError('gamma markets failed '+str(r))
-            rr=items(r.get('data'))
+                raise RuntimeError('gamma keyset markets failed '+str(r))
+            data=r.get('data')
+            rr=data.get('markets',[]) if isinstance(data,dict) else []
             for m in rr:
                 cid=str(first(m,'conditionId','condition_id') or '').lower()
                 if cid: by[cid]=m
-            if len(rr)<100: break
-            off+=100
+            cursor=data.get('next_cursor') if isinstance(data,dict) else None
+            pages+=1
+            if not cursor or not rr: break
+        if pages>=500: raise RuntimeError('gamma keyset page cap')
     return list(by.values())
 
 
 def fetch_market_day(cid,start,end,depth=0):
-    # Hidden start/end are empirically validated for market/user scoped trade queries.
     r=get('https://data-api.polymarket.com/trades',{
         'market':cid,'takerOnly':'true','limit':TRADE_LIMIT,'offset':0,'start':start,'end':end
     })
     if r.get('status')!=200:
         raise RuntimeError('market trades failed '+str(r))
     rr=items(r.get('data'))
-    # Explicit timestamp guard: if endpoint ever ignores time bounds, do not silently count wrong days.
     inwin=[t for t in rr if ets(t) is not None and start<=ets(t)<=end]
     outside=len(rr)-len(inwin)
     if len(rr)<TRADE_LIMIT:
@@ -74,20 +77,16 @@ def market_one(m,start,end):
     cid=str(first(m,'conditionId','condition_id') or '').lower()
     rows,outside,split=fetch_market_day(cid,start,end)
     rate,share,exp=fee_meta(m)
-    # Fallback to CLOB live/historical market metadata for missing Gamma feeSchedule.
     clob_fd=None
     if rate<=0:
         r=get('https://clob.polymarket.com/clob-markets/'+cid)
         d=r.get('data') if r.get('status')==200 and isinstance(r.get('data'),dict) else {}
         fd=d.get('fd') if isinstance(d,dict) else None
         if isinstance(fd,dict):
-            rate=fnum(first(fd,'r'))
-            exp=first(fd,'e')
-            clob_fd=fd
+            rate=fnum(first(fd,'r')); exp=first(fd,'e'); clob_fd=fd
     shares=sum(fnum(first(t,'size')) for t in rows)
     notional=sum(fnum(first(t,'size'))*fnum(first(t,'price')) for t in rows)
     base=sum(fnum(first(t,'size'))*fnum(first(t,'price'))*(1-fnum(first(t,'price'))) for t in rows)
-    # For crypto, empirical current share is 20%. If Gamma exposes rebateRate, retain and compare.
     empirical_share=.20 if abs(rate-.07)<=.002 else None
     used_share=share if share>0 else (empirical_share or 0.0)
     return {
